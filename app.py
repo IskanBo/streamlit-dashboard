@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import gspread
 
-# ——————————————— пароль ————————————————
+# ———— 1) Пароль-гейт ————
 def check_password():
     pwd = st.text_input("🔒 Введите пароль", type="password")
     if pwd != st.secrets["DASHBOARD_PASSWORD"]:
@@ -11,56 +11,46 @@ def check_password():
 
 check_password()
 
-# ————————— загрузка данных —————————
+# ———— 2) Загрузка и объединение листов ————
 @st.cache_data(ttl=300)
-def load_data():
-    # 1) Авторизация через Service Account из секретов
+def load_moloco():
     sa_info = st.secrets["google_service_account"]
     client  = gspread.service_account_from_dict(sa_info)
 
-    # 2) Открываем новую таблицу и объединяем все листы
     sheet_id = "1l3f4VVZjm-gman06C5uA72s6Bf6k_Rd3jzqUenzpTbM"
-    sh = client.open_by_key(sheet_id)
+    sh       = client.open_by_key(sheet_id)
+
     dfs = []
     for ws in sh.worksheets():
         recs = ws.get_all_records()
         if recs:
             df = pd.DataFrame(recs)
-            df["month"] = ws.title  # сохраняем имя листа
+            df["month"] = ws.title
             dfs.append(df)
+
     df = pd.concat(dfs, ignore_index=True)
-
-    # 3) Вычленяем "Баер id" по той же формуле
-    df["Баер id"] = (
-        df["campaign"]
-          .str.extract(r'_(\d+)_', expand=False)
-          .fillna(0)
-          .astype(int)
-    )
-    # 4) Приводим типы
     df["event_time"] = pd.to_datetime(df["event_time"])
-    df["cost"]       = pd.to_numeric(df["cost"], errors="coerce") / 1e6
-
     return df
 
-# ——————— рендеринг дашборда ———————
+# ———— 3) Интерфейс фильтрации и вывода ————
 def main():
-    st.title("📊 Затраты Moloco (новая таблица)")
+    st.title("🔎 Moloco: фильтрация по датам")
 
-    df = load_data()
+    df = load_moloco()
 
-    # Селектор группировки
-    period = st.selectbox("Группировать по", ["День", "Неделя", "Месяц"])
-    freq = {"День":"D", "Неделя":"W", "Месяц":"M"}[period]
+    # диапазон дат
+    min_date = df["event_time"].dt.date.min()
+    max_date = df["event_time"].dt.date.max()
+    start, end = st.date_input(
+        "Выберите период", [min_date, max_date], min_value=min_date, max_value=max_date
+    )
 
-    ts = df.set_index("event_time").resample(freq)["cost"].sum()
+    # фильтр
+    mask = (df["event_time"].dt.date >= start) & (df["event_time"].dt.date <= end)
+    filtered = df.loc[mask]
 
-    st.subheader(f"График затрат ({period.lower()})")
-    st.line_chart(ts)
-
-    st.subheader("Таблица агрегированных затрат")
-    table = ts.reset_index().rename(columns={"event_time":"Дата", "cost":"Затраты, $"})
-    st.dataframe(table, use_container_width=True)
+    st.write(f"Показаны записи с **{start}** по **{end}** (всего: {filtered.shape[0]})")
+    st.dataframe(filtered, use_container_width=True)
 
 if __name__ == "__main__":
     main()

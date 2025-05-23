@@ -1,9 +1,8 @@
 import streamlit as st
 import pandas as pd
-import gspread, google.auth
-import re
+import gspread
 
-# ———————————————— пароль-гейт ————————————————
+# ——————————————— пароль ————————————————
 def check_password():
     pwd = st.text_input("🔒 Введите пароль", type="password")
     if pwd != st.secrets["DASHBOARD_PASSWORD"]:
@@ -12,63 +11,53 @@ def check_password():
 
 check_password()
 
-# ————————————— загрузка и предобработка —————————————
+# ————————— загрузка данных —————————
 @st.cache_data(ttl=300)
 def load_data():
-    # Авторизация в Google Sheets
-    creds, _ = google.auth.default(
-        scopes=[
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive"
-        ]
-    )
-    client = gspread.authorize(creds)
+    # 1) Авторизация через Service Account из секретов
+    sa_info = st.secrets["google_service_account"]
+    client  = gspread.service_account_from_dict(sa_info)
 
-    # 1) Moloco: объединяем все месяцы в один DF
-    moloco_id = "1sHB72j5o4SJ-42WTHrK6XZz9EML930s1EcTX4BlohGU"
-    sh = client.open_by_key(moloco_id)
+    # 2) Открываем новую таблицу и объединяем все листы
+    sheet_id = "1l3f4VVZjm-gman06C5uA72s6Bf6k_Rd3jzqUenzpTbM"
+    sh = client.open_by_key(sheet_id)
     dfs = []
     for ws in sh.worksheets():
         recs = ws.get_all_records()
         if recs:
             df = pd.DataFrame(recs)
-            df["month"] = ws.title
+            df["month"] = ws.title  # сохраняем имя листа
             dfs.append(df)
     df = pd.concat(dfs, ignore_index=True)
 
-    # 2) Вычленяем Баер id
+    # 3) Вычленяем "Баер id" по той же формуле
     df["Баер id"] = (
         df["campaign"]
           .str.extract(r'_(\d+)_', expand=False)
           .fillna(0)
           .astype(int)
     )
-
-    # 3) Приводим типы
+    # 4) Приводим типы
     df["event_time"] = pd.to_datetime(df["event_time"])
-    df["cost"] = pd.to_numeric(df["cost"], errors="coerce") / 1e6
+    df["cost"]       = pd.to_numeric(df["cost"], errors="coerce") / 1e6
 
     return df
 
-# ———————————————— рендеринг ————————————————
+# ——————— рендеринг дашборда ———————
 def main():
-    st.title("📊 Затраты Moloco по времени")
+    st.title("📊 Затраты Moloco (новая таблица)")
 
     df = load_data()
 
-    # Выбор группировки
+    # Селектор группировки
     period = st.selectbox("Группировать по", ["День", "Неделя", "Месяц"])
-    freq_map = {"День":"D", "Неделя":"W", "Месяц":"M"}
-    freq = freq_map[period]
+    freq = {"День":"D", "Неделя":"W", "Месяц":"M"}[period]
 
-    # Агрегация
     ts = df.set_index("event_time").resample(freq)["cost"].sum()
 
-    # График
     st.subheader(f"График затрат ({period.lower()})")
     st.line_chart(ts)
 
-    # Таблица
     st.subheader("Таблица агрегированных затрат")
     table = ts.reset_index().rename(columns={"event_time":"Дата", "cost":"Затраты, $"})
     st.dataframe(table, use_container_width=True)
